@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Dark Mode</title>
+    <script src="https://js.puter.com/v2/"></script>
+    <style>
+        body { background: #0d1117; color: #c9d1d9; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        #chat-container { width: 90%; max-width: 600px; height: 80vh; background: #161b22; border: 1px solid #30363d; border-radius: 12px; display: flex; flex-direction: column; }
+        #messages { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+        .msg { padding: 10px 15px; border-radius: 10px; max-width: 80%; line-height: 1.4; }
+        .ai { background: #21262d; align-self: flex-start; }
+        .user { background: #238636; color: white; align-self: flex-end; }
+        .input-area { padding: 15px; display: flex; gap: 10px; border-top: 1px solid #30363d; }
+        input { flex: 1; background: #010409; border: 1px solid #30363d; color: white; padding: 10px; border-radius: 6px; }
+        button { background: #238636; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        #status-bar { padding: 5px 20px; font-size: 12px; background: #010409; color: #8b949e; display: flex; justify-content: space-between; }
+        button:disabled { opacity: 0.4; }
+    </style>
+</head>
+<body>
+
+<div id="chat-container">
+    <div id="status-bar">
+        <span id="status-text">🟡 Initializing...</span>
+        <span id="login-link" style="color: #58a6ff; cursor: pointer; display: none;" onclick="initPuter()">Click to Connect</span>
+    </div>
+    <div id="messages">
+        <div class="msg ai">Welcome. Please ensure popups are enabled for this site.</div>
+    </div>
+    <div class="input-area">
+        <input type="text" id="userInput" placeholder="Type a message..." disabled>
+        <button id="sendBtn" disabled>Send</button>
+    </div>
+</div>
+
+<script>
+    const msgBox = document.getElementById('messages');
+    const input = document.getElementById('userInput');
+    const btn = document.getElementById('sendBtn');
+    const status = document.getElementById('status-text');
+    const loginLink = document.getElementById('login-link');
+
+    // 1. Better Initialization
+    async function initPuter() {
+        try {
+            status.textContent = "🔵 Connecting...";
+            if (!puter.auth.isSignedIn()) {
+                await puter.auth.signIn();
+            }
+            status.textContent = "🟢 Online";
+            loginLink.style.display = "none";
+            input.disabled = false;
+            btn.disabled = false;
+        } catch (err) {
+            status.textContent = "🔴 Connection Blocked";
+            loginLink.style.display = "inline";
+            console.error(err);
+        }
+    }
+
+    // Run init on load
+    window.onload = initPuter;
+
+    async function sendChat() {
+        const text = input.value.trim();
+        if (!text) return;
+
+        addMsg(text, 'user');
+        input.value = "";
+        btn.disabled = true;
+
+        const aiMsg = addMsg("...", 'ai');
+
+        try {
+            // Added explicit model for reliability
+            const response = await puter.ai.chat(text, {model: 'gpt-4o-mini'});
+            aiMsg.textContent = response;
+        } catch (err) {
+            aiMsg.textContent = "Error: Check your connection or popup settings.";
+        } finally {
+            btn.disabled = false;
+            msgBox.scrollTop = msgBox.scrollHeight;
+        }
+    }
+
+    function addMsg(text, role) {
+        const d = document.createElement('div');
+        d.className = `msg ${role}`;
+        d.textContent = text;
+        msgBox.appendChild(d);
+        msgBox.scrollTop = msgBox.scrollHeight;
+        return d;
+    }
+
+    btn.onclick = sendChat;
+    input.onkeypress = (e) => { if(e.key === 'Enter') sendChat(); };
+</script>
+</body>
+</html>
