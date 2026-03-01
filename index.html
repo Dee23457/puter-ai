@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>IDIOTBOX 1</title>
+    <style>
+        @import url('https://fonts.cdnfonts.com/css/impact');
+        body { margin: 0; overflow: hidden; background: #1a001a; font-family: 'Impact', sans-serif; color: #ff00ff; }
+        #crosshair { position: absolute; top: 50%; left: 50%; width: 14px; height: 14px; border: 2px solid #ff00ff; transform: translate(-50%, -50%); pointer-events: none; z-index: 10; border-radius: 50%; }
+        #net-status { position: absolute; top: 30px; left: 30px; font-size: 18px; color: #fff; background: rgba(255,0,255,0.2); padding: 10px; border: 1px solid #ff00ff; z-index: 100; }
+        input { font-family: 'Impact'; background: #110011; border: 1px solid #ff00ff; color: #ff00ff; padding: 5px; outline: none; width: 150px; }
+        #my-id { color: #0ff; cursor: pointer; text-decoration: underline; }
+        #ui-left { position: absolute; bottom: 30px; left: 30px; background: rgba(30, 0, 30, 0.9); padding: 20px; border-left: 5px solid #ff00ff; pointer-events: none; }
+        .key { color: #000; background: #ff00ff; padding: 0 5px; margin-right: 5px; }
+    </style>
+</head>
+<body>
+
+<div id="net-status">
+    MY ID: <span id="my-id">...</span>
+    <input type="text" id="join-id" placeholder="CONNECT ID...">
+</div>
+
+<div id="crosshair"></div>
+
+<div id="ui-left">
+    <div style="font-size: 20px; color: #0ff;">VIEWMODEL SYNC ACTIVE</div>
+    <div><span class="key">R-CLICK</span> GRAB | <span class="key">1-4</span> SPAWN</div>
+</div>
+
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+<script type="importmap"> { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js", "cannon": "https://unpkg.com/cannon-es@0.20.0/dist/cannon-es.js" } } </script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import * as CANNON from 'cannon';
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a000a);
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.rotation.order = 'YXZ';
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const world = new CANNON.World();
+    world.gravity.set(0, -25, 0);
+
+    scene.add(new THREE.AmbientLight(0xff00ff, 0.3));
+    const pLight = new THREE.PointLight(0xff00ff, 20, 20); scene.add(pLight);
+    scene.add(new THREE.GridHelper(500, 50, 0xff00ff, 0x220022));
+
+    const floor = new CANNON.Body({ mass: 0, shape: new CANNON.Plane() });
+    floor.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI/2);
+    world.addBody(floor);
+
+    // --- LOCAL VIEWMODEL ---
+    const localGun = new THREE.Group();
+    const gMain = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.4), new THREE.MeshStandardMaterial({color: 0x000000}));
+    const gCore = new THREE.Mesh(new THREE.SphereGeometry(0.05), new THREE.MeshStandardMaterial({color: 0xff00ff, emissive: 0xff00ff, emissiveIntensity: 2}));
+    gCore.position.z = -0.15; localGun.add(gMain, gCore); scene.add(localGun);
+
+    // --- NETWORKING ---
+    const peer = new Peer();
+    let conns = [], objects = {}, remotePlayers = {};
+    const myIdEl = document.getElementById('my-id');
+    const joinInput = document.getElementById('join-id');
+
+    function createPlayerMesh() {
+        const group = new THREE.Group();
+        // Body
+        const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.4, 1, 4, 8), new THREE.MeshStandardMaterial({ color: 0x00ffff, emissive: 0x00ffff, emissiveIntensity: 0.5 }));
+        body.position.y = 0.9;
+        // Head/Pivot for the gun
+        const head = new THREE.Group();
+        head.position.y = 1.4;
+        const eye = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.1, 0.1), new THREE.MeshBasicMaterial({color: 0x000000}));
+        eye.position.z = -0.35;
+        // Remote Gun
+        const rGun = new THREE.Group();
+        const rgMain = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.4), new THREE.MeshStandardMaterial({color: 0x000000}));
+        rGun.position.set(0.3, -0.2, -0.2);
+        rGun.add(rgMain);
+        
+        head.add(eye, rGun);
+        group.add(body, head);
+        scene.add(group);
+        return { group, head };
+    }
+
+    peer.on('open', id => { myIdEl.innerText = id; });
+    peer.on('connection', setupConn);
+
+    function setupConn(c) {
+        c.on('open', () => {
+            conns.push(c);
+            remotePlayers[c.peer] = createPlayerMesh();
+            Object.keys(objects).forEach(id => c.send({ type: 'spawn', id, pos: objects[id].body.position, key: objects[id].key }));
+        });
+        c.on('data', d => {
+            if (d.type === 'player_move' && remotePlayers[c.peer]) {
+                const p = remotePlayers[c.peer];
+                p.group.position.set(d.x, d.y - 1.7, d.z);
+                p.group.rotation.y = d.ry;
+                p.head.rotation.x = d.pitch; // Sync looking up/down
+            }
+            if (d.type === 'spawn' && !objects[d.id]) spawn(d.key, d.id, d.pos, true);
+            if (d.type === 'obj_sync' && objects[d.id]) {
+                const o = objects[d.id];
+                o.body.position.set(d.x, d.y, d.z);
+                o.body.quaternion.set(d.qx, d.qy, d.qz, d.qw);
+            }
+        });
+        c.on('close', () => { scene.remove(remotePlayers[c.peer].group); delete remotePlayers[c.peer]; });
+    }
+
+    joinInput.onkeypress = e => { if(e.key === 'Enter') setupConn(peer.connect(e.target.value)); };
+
+    // --- GAMEPLAY ---
+    const kit = { '1': {s:[3, 0.2, 1.2], c:0x8b4513}, '2': {s:[2, 2, 2], c:0xcd853f}, '3': {s:[1, 1.6], c:0x333333, cy:true}, '4': {s:[1, 8, 1], c:0x444444} };
+
+    function spawn(key, id, pos, isRem = false) {
+        const d = kit[key];
+        const mesh = new THREE.Mesh(d.cy ? new THREE.CylinderGeometry(d.s[0]/2, d.s[0]/2, d.s[1], 16) : new THREE.BoxGeometry(...d.s), new THREE.MeshStandardMaterial({ color: d.c }));
+        const body = new CANNON.Body({ mass: 15, shape: d.cy ? new CANNON.Cylinder(d.s[0]/2, d.s[0]/2, d.s[1], 16) : new CANNON.Box(new CANNON.Vec3(d.s[0]/2, d.s[1]/2, d.s[2]/2)) });
+        body.position.copy(pos);
+        scene.add(mesh); world.addBody(body);
+        objects[id] = { mesh, body, key, owner: !isRem };
+        if (!isRem) conns.forEach(c => c.send({ type: 'spawn', id, pos, key }));
+    }
+
+    let yaw = 0, pitch = 0, pY = 0, vVel = 0, grounded = true, held = null, hId = null, bob = 0;
+    const keys = {};
+
+    window.addEventListener('mousedown', e => {
+        if (e.target.tagName === 'INPUT' || e.target.id === 'my-id') return;
+        if (!document.pointerLockElement) { renderer.domElement.requestPointerLock(); return; }
+        const ray = new THREE.Raycaster(); ray.setFromCamera(new THREE.Vector2(0,0), camera);
+        const hits = ray.intersectObjects(Object.values(objects).map(o => o.mesh));
+        if (e.button === 2) {
+            if (held) { objects[hId].owner = false; held = null; }
+            else if (hits.length > 0) {
+                hId = Object.keys(objects).find(k => objects[k].mesh === hits[0].object);
+                held = objects[hId].body; objects[hId].owner = true;
+            }
+        }
+    });
+
+    document.onmousemove = e => { if(document.pointerLockElement){ yaw -= e.movementX*0.002; pitch = Math.max(-1.5, Math.min(1.5, pitch - e.movementY*0.002)); }};
+    document.onkeydown = e => { 
+        if (document.activeElement === joinInput) return;
+        keys[e.code] = true; 
+        if (e.code === 'Space' && grounded) { vVel = 14; grounded = false; }
+        if (kit[e.key]) spawn(e.key, "o_"+peer.id+"_"+Date.now(), new THREE.Vector3(0,0,-5).applyQuaternion(camera.quaternion).add(camera.position));
+    };
+    document.onkeyup = e => keys[e.code] = false;
+
+    function animate() {
+        requestAnimationFrame(animate);
+        world.fixedStep();
+
+        const s = (keys.ShiftLeft ? 0.38 : 0.2);
+        if (document.activeElement !== joinInput && (keys.KeyW||keys.KeyS||keys.KeyA||keys.KeyD)) {
+            const move = new THREE.Vector3();
+            if(keys.KeyW) move.z-=s; if(keys.KeyS) move.z+=s; if(keys.KeyA) move.x-=s; if(keys.KeyD) move.x+=s;
+            camera.position.add(move.applyQuaternion(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), yaw)));
+            if(grounded) bob += s * 1.4;
+        }
+        
+        pY += vVel * 0.016;
+        if(pY > 0) { vVel -= 0.7; grounded = false; } else { pY=0; vVel=0; grounded=true; }
+        camera.position.y = (camera.position.y * 0.7) + ((pY + 1.7 + Math.sin(bob)*0.05) * 0.3);
+        camera.rotation.set(pitch, yaw, 0);
+
+        // Local Viewmodel Positioning
+        localGun.position.copy(camera.position); 
+        localGun.rotation.copy(camera.rotation);
+        localGun.translateX(0.35); localGun.translateY(-0.35); localGun.translateZ(-0.6);
+
+        // Player & Viewmodel Sync
+        if (conns.length > 0) {
+            conns.forEach(c => c.send({ 
+                type: 'player_move', 
+                x: camera.position.x, y: camera.position.y, z: camera.position.z, 
+                ry: yaw, pitch: pitch 
+            }));
+        }
+
+        if (held) {
+            const t = new THREE.Vector3(0,0,-5.5).applyQuaternion(camera.quaternion).add(camera.position);
+            held.velocity.set((t.x-held.position.x)*25, (t.y-held.position.y)*25, (t.z-held.position.z)*25);
+            held.angularVelocity.set(0,0,0);
+        }
+
+        Object.keys(objects).forEach(id => {
+            const o = objects[id];
+            o.mesh.position.copy(o.body.position);
+            o.mesh.quaternion.copy(o.body.quaternion);
+            if (o.owner && conns.length > 0) {
+                conns.forEach(c => c.send({
+                    type: 'obj_sync', id, 
+                    x: o.body.position.x, y: o.body.position.y, z: o.body.position.z,
+                    qx: o.body.quaternion.x, qy: o.body.quaternion.y, qz: o.body.quaternion.z, qw: o.body.quaternion.w
+                }));
+            }
+        });
+
+        renderer.render(scene, camera);
+    }
+    animate();
+</script>
+</body>
+</html>
